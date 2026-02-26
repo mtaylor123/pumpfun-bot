@@ -1,0 +1,38 @@
+rpc_url =    "http://127.0.0.1:8899"  # "https://api.devnet.solana.com"  # Change to "https://api.mainnet-beta.solana.com" later
+
+payer_keypair_path =   "/home/user/.config/solana/bot-payer.json" 
+
+#num_temp_wallets = 150
+
+num_temp_wallets = 50              # Start small
+
+price_buy_amount_lamports = 800_000      # ~0.0008 SOL per price push buy
+volume_pair_amount_lamports = 300_000    # ~0.0003 SOL per volume pair
+
+price_buy_frequency = 0.9                # 90% chance of price push buy per iteration
+volume_frequency = 0.5                   # 50% chance of volume pair per iteration
+
+#total_iterations = 40
+
+#main_delay_min_secs = 15
+#ain_delay_max_secs = 90
+
+#short_delay_min_secs = 3
+#short_delay_max_secs = 15
+
+total_iterations = 5
+main_delay_min_secs = 1
+main_delay_max_secs = 2
+short_delay_min_secs = 1
+short_delay_max_secs = 2
+
+
+initial_buy_amount_lamports = 1000000  # ~0.001 SOL
+
+sell_threshold_price = 0.001  # Sell if price > 0.001 SOL per token
+
+sell_threshold_mc = 100000  # Sell if market cap > $100k
+
+timeout_secs = 3600  # Sell all if 1 hour passes without threshold
+
+fund_temp_wallets_amount_lamports = 500_000  # 0.0005 SOL per temp wallet — adjust here for safety
