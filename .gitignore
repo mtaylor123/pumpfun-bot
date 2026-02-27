@@ -1,1 +1,12 @@
 /target
+
+# Solana local validator / ledger / logs
+test-ledger/
+ledger/
+**/rocksdb/
+*.log
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
