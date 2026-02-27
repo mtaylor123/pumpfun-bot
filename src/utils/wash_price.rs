@@ -21,6 +21,9 @@ use spl_associated_token_account::get_associated_token_address;
 use std::str::FromStr;
 use tokio::time::{ Instant};
 use spl_token::state::Account as SplTokenAccount;
+use crate::app_flags::AppFlags;
+use std::sync::atomic::Ordering;
+use rand::{rngs::StdRng, SeedableRng};
 
 
 /// How many wallets to actively use per “session”.
@@ -177,14 +180,19 @@ pub async fn Invest_In_New_Coin_Strategy_loop(
     main_delay_max_secs: u64,
     short_delay_min_secs: u64,
     short_delay_max_secs: u64,
+    flags: AppFlags, 
 ) -> Result<()> {
-    println!("Starting loop...");
 
+    flags.invest_done.store(false, Ordering::SeqCst);
+    println!("[invest] invest_done=false, stop_buys={}", flags.stop_buys.load(Ordering::SeqCst));
+    let should_stop = || flags.stop_buys.load(Ordering::SeqCst);
+
+    println!("Starting loop...");
     if temp_wallets.is_empty() {
         return Err(anyhow!("temp_wallets is empty"));
     }
 
-    let mut rng = rand::thread_rng();
+    let mut rng = StdRng::from_entropy();
     let is_local = rpc_client.url().contains("127.0.0.1") || rpc_client.url().contains("localhost");
 
     //let dust_keep = compute_dust_keep_lamports(rpc_client)?;
@@ -206,7 +214,10 @@ pub async fn Invest_In_New_Coin_Strategy_loop(
 
     for iter in 0..total_iterations {
         println!("Iteration {} / {}", iter + 1, total_iterations);
-
+         if should_stop() {
+            println!("[invest] stop_buys=true at iteration start. Exiting loop early.");
+            break;
+        }
         // Rotate session if needed
         if session_iters_left == 0 {
             // If we had a previous session, refund it before switching
@@ -292,7 +303,11 @@ pub async fn Invest_In_New_Coin_Strategy_loop(
         // -------------------------
         // Part A: occasional “price buy”
         // -------------------------
-        if rng.gen_bool(buy_frequency.clamp(0.0, 1.0)) {
+
+        if should_stop() {
+             println!("[invest] stop_buys=true before PRICE BUY section. Skipping buys.");
+             break;
+        } else if rng.gen_bool(buy_frequency.clamp(0.0, 1.0)) {
             // pick random active wallet
             let wi = *active_indices.choose(&mut rng).unwrap();
             let w = &temp_wallets[wi];
@@ -345,7 +360,11 @@ pub async fn Invest_In_New_Coin_Strategy_loop(
         // -------------------------
         // Part B: “volume pair” (2-leg)
         // -------------------------
-        if rng.gen_bool(frequency.clamp(0.0, 1.0)) {
+
+        if should_stop() {
+            println!("[invest] stop_buys=true before VOLUME section. Skipping volume activity.");
+            break;
+        } else if rng.gen_bool(frequency.clamp(0.0, 1.0)) {
             // If we’ve net-bought too much, bias toward selling first
             let buy_first_prob: f64 = if buy_minus_sell > 2 { 0.30 } else { 0.70 };
             let buy_first = rng.gen_bool(buy_first_prob);
@@ -502,7 +521,15 @@ pub async fn Invest_In_New_Coin_Strategy_loop(
         // Main delay between iterations
         let delay_secs = rng.gen_range(main_delay_min_secs..=main_delay_max_secs).max(1);
         println!("Sleeping for {} seconds...", delay_secs);
-        sleep(Duration::from_secs(delay_secs)).await;
+        let mut slept = 0u64;
+        while slept < delay_secs {
+            if should_stop() {
+                println!("[invest] stop_buys=true during sleep. Breaking out.");
+                break;
+            }
+            sleep(Duration::from_secs(1)).await;
+            slept += 1;
+        }
     }
 
     // Final refund for the last session
@@ -516,6 +543,8 @@ pub async fn Invest_In_New_Coin_Strategy_loop(
 
     }
 
+    flags.invest_done.store(true, Ordering::SeqCst);
+    println!("[invest] invest_done=true, exiting Invest loop.");
     println!("Loop complete!");
     Ok(())
 }

@@ -3,12 +3,12 @@ mod utils;
 mod pumpfun;
 mod trend_fetcher;
 mod ai_generator;
-
 mod monitoring;
 mod sell;
-
 mod initial_buy;
+mod app_flags;
 
+use crate::app_flags::AppFlags;
 use monitoring::run_monitoring_and_sell;
 use sell::perform_sell_all;
 use crate::sell::refund_temp_wallets_to_payer;
@@ -27,6 +27,8 @@ use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 use rand::seq::SliceRandom;
 use rand::thread_rng;
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 
 #[tokio::main]
@@ -112,9 +114,6 @@ async fn main() -> anyhow::Result<()> {
 
     println!("Mint created: {}", mint);
 
-
-
-
         // refund_temp_wallets_to_payer(
         // &manager.rpc_client,
         // &manager.payer,
@@ -134,89 +133,113 @@ async fn main() -> anyhow::Result<()> {
 
     println!("Initial buy complete!");
 
-     let monitoring_res = monitoring::run_monitoring_and_sell(
-        &manager.rpc_client,
-        &manager.payer,
-        &manager.temp_wallets,
-        &mint,
-        cfg.sell_threshold_price,
-        cfg.sell_threshold_mc,
-        cfg.timeout_secs,
-    ).await;
+    let flags = AppFlags::new();
 
-    if let Err(e) = &monitoring_res {
-        eprintln!("[WARN] run_monitoring_and_sell failed: {:#}", e);
-        // continue no matter what
+    // Wrap shared things in Arc so both tasks can use them without moving `manager`
+    let rpc = Arc::new(manager.rpc_client);
+    let payer = Arc::new(manager.payer);
+    let temp_wallets = Arc::new(manager.temp_wallets);
+
+    // Pubkey is Copy, so this is fine:
+    let mint_copy = mint;
+
+    let flags_for_monitor = flags.clone();
+    let rpc_m = rpc.clone();
+    let payer_m = payer.clone();
+    let temps_m = temp_wallets.clone();
+
+    let monitor_task = tokio::spawn(async move {
+        monitoring::run_monitoring_and_sell(
+            rpc_m.as_ref(),
+            payer_m.as_ref(),
+            temps_m.as_ref(),
+            &mint_copy,
+            cfg.sell_threshold_price,
+            cfg.sell_threshold_mc,
+            cfg.timeout_secs,
+            flags_for_monitor,
+        )
+        .await
+    });
+
+    let flags_for_invest = flags.clone();
+    let rpc_i = rpc.clone();
+    let payer_i = payer.clone();
+    let temps_i = temp_wallets.clone();
+
+    let invest_task = tokio::spawn(async move {
+        utils::wash_price::Invest_In_New_Coin_Strategy_loop(
+            rpc_i.as_ref(),
+            payer_i.as_ref(),
+            temps_i.as_ref(),
+            &mint_copy,
+            cfg.price_buy_amount_lamports,
+            cfg.volume_pair_amount_lamports,
+            cfg.price_buy_frequency,
+            cfg.volume_frequency,
+            cfg.total_iterations,
+            cfg.main_delay_min_secs,
+            cfg.main_delay_max_secs,
+            cfg.short_delay_min_secs,
+            cfg.short_delay_max_secs,
+            flags_for_invest,
+        )
+        .await
+    });
+
+    let (i_res, m_res) = tokio::join!(invest_task, monitor_task);
+
+    // Handle invest task result without crashing the whole program
+    match i_res {
+        Ok(Ok(())) => println!("[main] invest task finished ok"),
+        Ok(Err(e)) => {
+            eprintln!("[main][WARN] invest task returned error: {:#}", e);
+            // Important: allow monitor to proceed with sell if it was waiting
+            flags.invest_done.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        Err(join_err) => {
+            eprintln!("[main][WARN] invest task panicked/cancelled: {}", join_err);
+            flags.invest_done.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    // Handle monitor task result without crashing the whole program
+    match m_res {
+        Ok(Ok(())) => println!("[main] monitor task finished ok"),
+        Ok(Err(e)) => {
+            eprintln!("[main][WARN] monitor task returned error: {:#}", e);
+            // Safety: tell invest to stop if monitor died
+            flags.stop_buys.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        Err(join_err) => {
+            eprintln!("[main][WARN] monitor task panicked/cancelled: {}", join_err);
+            flags.stop_buys.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
     }
 
 
 
+    // -------------------------
+    // FINALIZATION (always runs)
+    // -------------------------
+
+    flags.stop_buys.store(true, Ordering::SeqCst);
+    flags.invest_done.store(true, Ordering::SeqCst);
+
+    println!("[main] Finalization: sanity sell_all (best-effort)...");
+    if let Err(e) = perform_sell_all(rpc.as_ref(), payer.as_ref(), temp_wallets.as_ref(), &mint_copy).await {
+        eprintln!("[main][WARN] final perform_sell_all failed: {:#}", e);
+    }
+
+    println!("[main] Finalization: refund temp wallets to payer (must run)...");
+    if let Err(e) = refund_temp_wallets_to_payer(rpc.as_ref(), payer.as_ref(), temp_wallets.as_ref()).await {
+        eprintln!("[main][WARN] refund_temp_wallets_to_payer failed: {:#}", e);
+    } else {
+        println!("[main] refund_temp_wallets_to_payer completed OK");
+    }
+
+
 // let mint = Pubkey::from_str("JBkrFe4YtLQSdwGFQ2eqbEBoBqR9614acyRM7Y9NVjBd")?;
-
-//  let loop_res = utils::wash_price::Invest_In_New_Coin_Strategy_loop(
-//         &manager.rpc_client,
-//         &manager.payer,
-//         &manager.temp_wallets,
-//         &mint,
-//         cfg.price_buy_amount_lamports,
-//         cfg.volume_pair_amount_lamports,
-//         cfg.price_buy_frequency,
-//         cfg.volume_frequency,
-//         cfg.total_iterations,
-//         cfg.main_delay_min_secs,
-//         cfg.main_delay_max_secs,
-//         cfg.short_delay_min_secs,
-//         cfg.short_delay_max_secs,
-//     ).await;
-
-//     if let Err(e) = &loop_res {
-//         eprintln!("[WARN] Invest_In_New_Coin_Strategy_loop  error: {:#}", e);
-//     }
-
-//     let monitoring_res = monitoring::run_monitoring_and_sell(
-//         &manager.rpc_client,
-//         &manager.payer,
-//         &manager.temp_wallets,
-//         &mint,
-//         cfg.sell_threshold_price,
-//         cfg.sell_threshold_mc,
-//         cfg.timeout_secs,
-//     ).await;
-
-//     if let Err(e) = &monitoring_res {
-//         eprintln!("[WARN] run_monitoring_and_sell failed: {:#}", e);
-//         // continue no matter what
-//     }
-
-
-//     refund_temp_wallets_to_payer(
-//         &manager.rpc_client,
-//         &manager.payer,
-//         &manager.temp_wallets,
-//     ).await?;
-
-
-
-
-
-
-
-
-//  refund_temp_wallets_to_payer(
-//         &manager.rpc_client,
-//         &manager.payer,
-//         &manager.temp_wallets,
-//         ).await?;
-
-
-// sell_on_curve(rpc_client, payer, mint_pubkey, 1_000_000_000).await?; 
-
-
-
-// // Check results
-// loop_result?;
-// monitoring_result?;
-
 
 
     Ok(())

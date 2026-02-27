@@ -14,6 +14,9 @@ use std::str::FromStr;
 use serde_json::Value;
 use reqwest::{Client, header};
 
+use crate::app_flags::AppFlags;
+use std::sync::atomic::Ordering;
+
 const PUMP_PROGRAM_ID_STR: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
 
 /// Your on-chain Borsh struct (after stripping 8-byte Anchor discriminator)
@@ -246,6 +249,7 @@ pub async fn run_monitoring_and_sell(
     sell_threshold_price: f64,
     sell_threshold_mc: u64,
     timeout_secs: u64,
+    flags: AppFlags, 
 ) -> Result<()> {
     println!("Starting monitoring for mint: {}", mint_pubkey);
     println!(
@@ -290,6 +294,7 @@ pub async fn run_monitoring_and_sell(
         // Timeout first
         if start_time.elapsed().as_secs() > timeout_secs {
             println!("Timeout reached! Triggering sell all...");
+            stop_invest_and_wait(&flags).await;
             perform_sell_all(rpc_client, payer, temp_wallets, mint_pubkey).await?;
             return Ok(());
         }
@@ -340,6 +345,7 @@ pub async fn run_monitoring_and_sell(
                 "Sell threshold met! price_hit={} mc_hit={} => selling all...",
                 price_hit, mc_hit
             );
+            stop_invest_and_wait(&flags).await;
             perform_sell_all(rpc_client, payer, temp_wallets, mint_pubkey).await?;
             return Ok(());
         }
@@ -349,6 +355,21 @@ pub async fn run_monitoring_and_sell(
     }
 }
 
+
+async fn stop_invest_and_wait(flags: &AppFlags) {
+    flags.stop_buys.store(true, Ordering::SeqCst);
+    println!("[monitor] stop_buys=true set. Waiting for invest_done...");
+    let wait_start = Instant::now();
+    while !flags.invest_done.load(Ordering::SeqCst) {
+         if wait_start.elapsed().as_secs() >= 10 {
+            eprintln!("[monitor][WARN] invest_done not set after 10s; selling anyway.");
+            flags.invest_done.store(true, Ordering::SeqCst);
+            break;
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
+    println!("[monitor] invest_done=true. Proceeding to sell.");
+}
 
 // pub async fn run_monitoring_and_sell(
 //     rpc_client: &RpcClient,
