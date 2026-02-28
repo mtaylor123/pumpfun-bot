@@ -333,6 +333,7 @@ pub async fn Invest_In_New_Coin_Strategy_loop(
 
                 if is_local {
                     println!("  [LOCAL] simulated buy");
+                    buy_minus_sell += 1;
                 } else {
                     // YOU SAID wrappers already exist — use them:
                    // crate::pumpfun::buy_on_curve_async_from_client(rpc_client, w, mint_pubkey, amount).await?;
@@ -352,8 +353,6 @@ pub async fn Invest_In_New_Coin_Strategy_loop(
                         }
                     }
                 }
-
-                buy_minus_sell += 1;
             }
         }
 
